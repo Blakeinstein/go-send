@@ -10,79 +10,85 @@ import (
 )
 
 //GoSend - this function is exported to the main module
-func GoSend(fileName string, serverAddr string) {
-	
+func GoSend(fileName string, serverAddr string, port string) {
 	fmt.Println("File name is:", fileName)
-	listenAddr, err := ExternalIP()
+	listenAddrString, err := ExternalIP()
 	if err != nil {
 		panic(err)
 	}
-	// fmt.Println("address is:", listenAddr)
-	listenAddr = listenAddr + ":9000"
-	
-	l, err := net.Listen("tcp", listenAddr)
-	if err != nil {
-		listenAddr = strings.Split(listenAddr, ":")[0]
-		listenAddr = listenAddr + ":11000"
-		l, _ = net.Listen("tcp", listenAddr)
-	}
-	fmt.Println("Listening on:", listenAddr)
-	registerSend(fileName, listenAddr, serverAddr)
-	for {
-		conn, err := l.Accept()
-		if err != nil {
-			fmt.Println(err)
-		}
-		go handleConnectionSend(conn)
-	}
-	
+	listenAddrString = listenAddrString + port
+	registerSend(fileName, listenAddrString, serverAddr)
 }
 
-func registerSend(fileName string, listenAddr string, serverAddr string) {
-	fmt.Println("Dialing:", serverAddr)
-	conn, err := net.Dial("tcp", serverAddr)
+func registerSend(fileName string, listenAddrstring string, serverAddrstring string) {
+	fmt.Println("Dialing:", serverAddrstring)
+	listenAddr, _ := net.ResolveUDPAddr("udp", listenAddrstring)
+	serverAddr, _ := net.ResolveUDPAddr("udp", serverAddrstring)
+	conn, err := net.ListenUDP("udp", listenAddr)
 	if err!= nil {
 		fmt.Println(err)
 	}
-	sendString := "REGISTER," + fileName + "," + listenAddr
-	fmt.Println("Sending:", sendString)
-	conn.Write([]byte(sendString))
+
+	go func() {
+		sendString := "REGISTER," + fileName + "," + listenAddrstring
+		bytesWritten, err := conn.WriteTo([]byte(sendString), serverAddr)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Println("Sending:", sendString)
+		fmt.Println(bytesWritten, "bytes sent")
+	} ()
+
+	handleConnectionSend(conn, listenAddrstring)
 }
 
-func handleConnectionSend(conn net.Conn) {
+func handleConnectionSend(conn *net.UDPConn, listenAddr string) {
+
+	for {
+		fmt.Println("Listening")
+		buffer := make([]byte, 1024)
+		bytesRead, err := conn.Read(buffer)
+		if err != nil {
+			panic(err)
+		}
+		reply := strings.Split(string(buffer[0:bytesRead]), ",")[0]
+		fmt.Println("Buffer:", string(buffer[0:bytesRead]))
+		if reply == "SUCCESS" {
+			fmt.Println("File is ready for sharing")
+		} else if reply == "REQUEST" {
+			peerAddr := strings.Split(string(buffer[0:bytesRead]), ",")[1]
+			fileName := strings.Split(string(buffer[0:bytesRead]), ",")[2]
+			fmt.Println("File requested from:", peerAddr)
+			sendFile(fileName, listenAddr, peerAddr, conn)	
+		}
+	}	
+}
+
+func sendFile(fileName string, listenAddrstring string, peerAddrstring string, conn *net.UDPConn) {
+	
+	peerAddr, _ := net.ResolveUDPAddr("udp", peerAddrstring)
+	name := strings.Split(fileName, ".")[0]
+	ext := strings.Split(fileName, ".")[1]
+	conn.WriteTo([]byte("SENDING,"+name+","+ext), peerAddr)
+
 	buffer := make([]byte, 1024)
 	bytesRead, err := conn.Read(buffer)
 	if err != nil {
 		panic(err)
 	}
-	reply := strings.Split(string(buffer[0:bytesRead]), ",")[0]
-	fmt.Println("Buffer:", string(buffer[0:bytesRead]))
-	if reply == "SUCCESS" {
-		fmt.Println("File is ready for sharing")
-	} else if reply == "REQUEST" {
-		peerAddr := strings.Split(string(buffer[0:bytesRead]), ",")[1]
-		fileName := strings.Split(string(buffer[0:bytesRead]), ",")[2]
-		fmt.Println("File requested from:", peerAddr)
-		sendFile(fileName, peerAddr)	
-	}
-
-	conn.Close()
+	reply := string(buffer[0:bytesRead])
+	fmt.Println("Reply:", reply)
+	if reply == "OK" {
+		readFile(fileName, conn, peerAddrstring)
+		fmt.Println("File sent")
+		conn.WriteTo([]byte("EXIT"), peerAddr)
+	} else {
+		fmt.Println("Can't establish connection")
+	}	
 }
 
-func sendFile(fileName string, peerAddr string) {
-	conn, err := net.Dial("tcp", peerAddr)
-	if err != nil {
-		panic(err)
-	}
-	name := strings.Split(fileName, ".")[0]
-	ext := strings.Split(fileName, ".")[1]
-	conn.Write([]byte("SENDING,"+name+","+ext))
-	readFile(fileName, conn)
-	fmt.Println("File sent")
-	conn.Write([]byte("EXIT"))
-}
-
-func readFile(fileName string, conn net.Conn) {
+func readFile(fileName string, conn *net.UDPConn, peerAddrString string) {
+	peerAddr, _ := net.ResolveUDPAddr("udp", peerAddrString)
 	f, err := os.Open(fileName)
 	if err != nil {
 		fmt.Println("Can't read the file", err)
@@ -107,6 +113,7 @@ func readFile(fileName string, conn net.Conn) {
 			break
 		}
 		fmt.Println("SENDING:", string(buf))
-		conn.Write(buf)
+		fmt.Println("=====================")
+		conn.WriteTo(buf, peerAddr)
 	}
 }
